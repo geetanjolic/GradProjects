@@ -1,0 +1,778 @@
+
+```{r}
+#install.packages(c("plotly", "maps", "geofacet"))
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(rio)
+library(ggplot2)
+library(cowplot)
+library(randomForest)
+library(rsample)
+library(rpart)
+library(rpart.plot)
+library(broom)
+library(yardstick)
+library(caret)
+library(cutpointr)
+library(GGally)
+library(RColorBrewer)
+library(plotly)
+library(maps)
+library(geofacet)
+library(ggpubr)
+library(Metrics)
+library(ggnewscale)
+```
+
+
+### HOMELESS RATE FAMILY ANALYSIS
+
+Visuals
+```{r}
+us_states <- map_data("state")
+
+# Heat map homeless_family_rate
+a1<-df_pit_count_final %>% 
+  #filter(year == 2019) %>%
+  full_join(us_states, by = c("statename" = "region")) %>%
+  ggplot(aes(long, lat)) + 
+  geom_polygon(aes(group = group, fill = homeless_family)) + 
+  #scale_fill_manual( labels="rate", values = "blue")  +
+  coord_map() + 
+  labs(title = "Heatmap - Family homeless count")+
+  scale_fill_continuous("Count")
+
+# Heat map homeless_individual_rate
+a2<-df_pit_count_final %>% 
+  #filter(year == 2019) %>%
+  full_join(us_states, by = c("statename" = "region")) %>%
+  ggplot(aes(long, lat)) + 
+  geom_polygon(aes(group = group, fill = homeless_individual)) + 
+  coord_map() +
+  labs(title = "Heatmap - Individual homeless count")+
+  scale_fill_continuous("Count")
+
+# Top 5 states each year with homeless_family_rate
+a3<-df_pit_count_final %>%
+  group_by(year) %>%
+  slice_max(homeless_family_rate, n=5) %>%
+  ggplot(aes(x=year, y= homeless_family_rate, fill = state)) + 
+  geom_col(position = "dodge", width = 0.7, color = "black") + 
+  theme_bw()+
+  labs(title = "Top 5 states each year - Family homeless rate", y = "Homeless rate")+
+  scale_fill_brewer(palette = "Pastel1")
+
+# Top 5 states each year with homeless_individual_rate
+a4<-df_pit_count_final %>%
+  group_by(year) %>%
+  slice_max(homeless_individual_rate, n=5) %>%
+  ggplot(aes(x=year, y= homeless_individual_rate, fill = state)) + 
+  geom_col(position = "dodge", width = 0.7, color = "black") + 
+  theme_bw()+
+  labs(title = "Top 5 states each year - Individual homeless rate", y = "Homeless rate")+
+  scale_fill_brewer(palette = "Pastel1")
+
+ggarrange(a1,a2,a3,a4,
+          labels = c("A", "B", "C","D"),
+          ncol = 2, nrow = 2)
+
+# Difference plot between 2019 and 2015 for homeless_family_rate
+a5<-df_pit_count_final %>% 
+  group_by(state) %>%
+  filter(year == 2015 | year == 2019) %>%
+  mutate(diff = homeless_family_rate - homeless_family_rate[1], 
+         diff = replace(diff, row_number() == 1, NA),
+         pos = diff>0) %>% 
+  drop_na() %>%
+  ggplot(aes(x = state, y = diff, fill = pos) ) + 
+  geom_bar(stat="identity", colour = "black", size = 0.25) + 
+  scale_fill_manual( values=c("gray", "red"), guide = 'none')  + 
+  theme_bw() +
+  labs(y = "Homeless rate", title = "Family homeless rate change - 2015-2019") +
+  theme(axis.text.x = element_text(angle = 90))
+
+ggarrange(a5,a6,
+          labels = c("A", "B"),
+          ncol = 1, nrow = 2)
+
+# Difference plot between 2019 and 2015 for homeless_individual_rate
+a6<-df_pit_count_final %>% 
+  group_by(state) %>%
+  filter(year == 2015 | year == 2019) %>%
+  mutate(diff = homeless_individual_rate - homeless_individual_rate[1], 
+         diff = replace(diff, row_number() == 1, NA),
+         pos = diff>0) %>% 
+  drop_na() %>%
+  ggplot(aes(x = state, y = diff, fill = pos) ) + 
+  geom_bar(stat="identity", colour = "black", size = 0.25) + 
+  scale_fill_manual( values=c("gray", "red"), guide = 'none')  + 
+  theme_bw() +
+  labs(y = "Homeless rate", title = "Individual homeless rate change - 2015-2019") +
+  theme(axis.text.x = element_text(angle = 90))
+
+
+# Difference plot between 2019 and 2015 for homeless_family_rate
+# df_pit_count_final %>% 
+#   group_by(state) %>%
+#   filter(year == 2015 | year == 2016) %>%
+#   mutate(diff = homeless_family_rate - homeless_family_rate[1], 
+#          diff = replace(diff, row_number() == 1, NA)) %>% 
+#   drop_na() 
+
+
+df_pit_count_1 <- df_pit_count_final %>%
+  select(1,2,c(8:16)) %>%
+  mutate(log_median_income = log(median_income), log_fmr = log(fmr_studio), log_mgr = log(mgr_studio))
+
+pf1 <-df_pit_count_1 %>%
+  ggplot(aes(x=mgr_studio)) + 
+  geom_point(aes(y=homeless_family_rate), color="gray") +
+  geom_smooth(aes(y=homeless_family_rate, color="Family"), method="lm", se = FALSE) +
+  geom_point(aes(y=homeless_individual_rate)) +
+  geom_smooth(aes(y=homeless_individual_rate, color="Indivudual"), method="lm", se = FALSE) + 
+  theme_bw() +
+  labs(x="MGR", y ="Homeless Rate", color="", fill="") 
+  
+pf2 <- df_pit_count_1 %>%
+  ggplot(aes(x=log_median_income)) + 
+  geom_point(aes(y=homeless_family_rate), color="gray") +
+  geom_smooth(aes(y=homeless_family_rate, color="Family"), method="lm", se = FALSE) +
+  geom_point(aes(y=homeless_individual_rate)) +
+  geom_smooth(aes(y=homeless_individual_rate, color="Indivudual"), method="lm", se = FALSE) + 
+  theme_bw() +
+  labs(x="Log of Median Income", y ="Homeless Rate", color="", fill="") 
+
+pf3 <- df_pit_count_1 %>%
+  ggplot(aes(x=log_fmr)) + 
+  geom_point(aes(y=homeless_family_rate), color="gray") +
+  geom_smooth(aes(y=homeless_family_rate, color="Family"), method="lm", se = FALSE) +
+  geom_point(aes(y=homeless_individual_rate)) +
+  geom_smooth(aes(y=homeless_individual_rate, color="Indivudual"), method="lm", se = FALSE) + 
+  theme_bw() +
+  labs(x="Log of FMR", y ="Homeless Rate", color="", fill="") 
+
+pf4 <- df_pit_count_1 %>%
+  ggplot(aes(x=min_wage)) + 
+  geom_point(aes(y=homeless_family_rate), color="gray") +
+  geom_smooth(aes(y=homeless_family_rate, color="Family"), method="lm", se = FALSE) +
+  geom_point(aes(y=homeless_individual_rate)) +
+  geom_smooth(aes(y=homeless_individual_rate, color="Indivudual"), method="lm", se = FALSE) + 
+  theme_bw() +
+  labs(x="Minimum Wage", y ="Homeless Rate", color="", fill="") 
+  
+
+pf5 <- df_pit_count_1 %>%
+  ggplot(aes(x=unemployment_rate)) + 
+  geom_point(aes(y=homeless_family_rate), color="gray") +
+  geom_smooth(aes(y=homeless_family_rate, color="Family"), method="lm", se = FALSE) +
+  geom_point(aes(y=homeless_individual_rate)) +
+  geom_smooth(aes(y=homeless_individual_rate, color="Indivudual"), method="lm", se = FALSE) + 
+  theme_bw() +
+  labs(x="Unemployment Rate", y ="Homeless Rate", color="", fill="") 
+  
+
+pf6 <- df_pit_count_1 %>%
+  ggplot(aes(x=poverty_rate)) + 
+  geom_point(aes(y=homeless_family_rate), color="gray") +
+  geom_smooth(aes(y=homeless_family_rate, color="Family"), method="lm", se = FALSE) +
+  geom_point(aes(y=homeless_individual_rate)) +
+  geom_smooth(aes(y=homeless_individual_rate, color="Indivudual"), method="lm", se = FALSE) + 
+  theme_bw() +
+  labs(x="Poverty Rate", y ="Homeless Rate", color="", fill="") 
+
+pf1 
+pf2
+pf3
+pf4
+pf5
+pf6
+
+ggarrange(pf1,pf2,pf3,pf4,pf5,pf6,
+          labels = c("A", "B", "C","D","E","F"),
+          ncol = 2, nrow = 3)
+
+df_pit_count_final %>% 
+  #filter(year == 2019) %>%
+  full_join(us_states, by = c("statename" = "region")) %>%
+  ggplot(aes(long, lat)) + 
+  geom_polygon(aes(group = group, fill = homeless_family)) + 
+  #scale_fill_manual( labels="rate", values = "blue")  +
+  coord_map() + 
+  labs(title = "Heatmap - Family homeless rate") + scale_fill_continuous("Rate")
+
+
+```
+
+
+
+### Correlation of variables:
+```{r}
+library(corrplot)
+M = cor(df_pit_count_final[,c(9,10,11,12,13,16,19,20)])
+corrplot(M, method = 'number',addCoef.col="black",number.cex=0.65)
+
+ggpairs(df_pit_count_final,
+        columns = c(9,10, 11:16)) +  
+  theme_bw()
+ggpairs(df_pit_count_final,columns = c(10:16))
+
+cor(df_pit_count_final$homeless_individual_rate, log(df_pit_count_final$median_income))
+
+corrplot(M, method = 'color', col=col(200),addCoef.col="black",number.cex=0.65, order = 'original', type = 'upper', diag = FALSE)
+corrplot(M, method = 'number',addCoef.col="black",number.cex=0.65)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+```
+
+
+
+### RANDOM FOREST MODELS
+```{r}
+# Run random forest regression with individual predictors and find %IncMSE and IncNodePurity
+set.seed(7)
+#  Predictor: fmr_studio, % Var explained: 46.44, %IncMSE: 29.43511 IncNodePurity: 1.546446
+rfmodel1<- randomForest(homeless_family_rate ~ fmr_2br, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# min_wage, % Var explained: 13.24, %IncMSE: 23.92242 IncNodePurity: 1.1136
+rfmodel2<- randomForest(homeless_family_rate ~ min_wage, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# unemployment_rate, % Var explained: -12.93, %IncMSE: 8.830978 IncNodePurity: 0.6396961
+rfmodel3<- randomForest(homeless_family_rate ~ unemployment_rate, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+#  mgr_studio, % Var explained: 56.12, %IncMSE: 30.90518 IncNodePurity: 1.61849
+rfmodel4<- randomForest(homeless_family_rate ~ mgr_2br, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+#  median_income, % Var explained: -43.24, %IncMSE: 2.195732 IncNodePurity: 1.444052
+rfmodel5<- randomForest(homeless_family_rate ~ median_income, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+#  poverty_rate, % Var explained: -30.45, %IncMSE: 1.754517 IncNodePurity: 0.8952304
+rfmodel6<- randomForest(homeless_family_rate ~ poverty_rate, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+rfmodel1
+rfmodel2
+rfmodel3
+rfmodel4
+rfmodel5
+rfmodel6
+
+importance(rfmodel1)
+importance(rfmodel2)
+importance(rfmodel3)
+importance(rfmodel4)
+importance(rfmodel5)
+importance(rfmodel6)
+importance(rfmodel7)
+importance(rfmodel8)
+importance(rfmodel9)
+
+
+# Run random forest regression with combination of predictors 
+set.seed(7)
+# Mean of squared residuals: 0.003425248, % Var explained: 47.4
+rfmodel1<- randomForest(homeless_family_rate ~ fmr_2br, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.002900651, % Var explained: 55.45
+rfmodel2<- randomForest(homeless_family_rate ~ fmr_2br + min_wage, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.002853949, % Var explained: 56.17
+rfmodel3<- randomForest(homeless_family_rate ~ fmr_2br + min_wage + mgr_2br, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.002111154, % Var explained: 67.58
+rfmodel4<- randomForest(homeless_family_rate ~ fmr_2br + min_wage + unemployment_rate + mgr_2br, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.002065679, % Var explained: 68.28
+rfmodel5<- randomForest(homeless_family_rate ~ fmr_2br + min_wage  + mgr_2br + median_income, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.001946079, % Var explained: 70.11
+rfmodel6<- randomForest(homeless_family_rate ~ fmr_2br + min_wage + unemployment_rate + mgr_2br + median_income + poverty_rate, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.002460706, % Var explained: 68.12
+rfmodel7<- randomForest(homeless_individual_rate ~ fmr_2br + min_wage + unemployment_rate + mgr_2br + median_income, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+# Mean of squared residuals: 0.002460706, % Var explained: 68.12
+rfmodel8<- randomForest(homeless_individual_rate ~ fmr_2br + min_wage + unemployment_rate + mgr_2br + median_income + poverty_rate, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+# Mean of squared residuals: 0.002460706, % Var explained: 68.12
+rfmodel9<- randomForest(homeless_individual_rate ~ fmr_2br + min_wage  + mgr_2br + median_income , 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 3)
+
+rfmodel1
+rfmodel2
+rfmodel3
+rfmodel4
+rfmodel5
+rfmodel6
+rfmodel7
+rfmodel8
+rfmodel9
+```
+
+
+
+### TRAIN AND TEST MODEL
+```{r}
+# Tune the model to find the best mtry. Best mtry = 3
+rfmodel_tuned <- tuneRF(
+               x=df_pit_count_final[11:16], #define predictor variables
+               y=df_pit_count_final$homeless_family_rate, #define response variable
+               ntreeTry=500,
+               mtryStart=3, 
+               stepFactor=1.5,
+               improve=0.01,
+               trace=FALSE #don't show real-time progress
+               )
+
+# Using rfmodel6 to analyze the data:
+rfmodel <- randomForest(homeless_family_rate ~ fmr_studio + min_wage + unemployment_rate + mgr_studio + median_income + poverty_rate, 
+                         data = df_pit_count_final,
+                         importance = TRUE,
+                         ntree = 500,
+                         mtry = 3)
+which.min(rfmodel$mse)
+# Based on the results of the tuneRF() function, the best mtry is 3. Running the regression model with the default 500 trees, we find the lowest MSE at 271 trees. With this data our final model will have mtry=3 and ntree=300
+
+# Split the dataset into training and testing 
+set.seed(42)
+df_pit_split <- initial_split(df_pit_count_final, prop = 0.7)
+df_pit_train <- training(df_pit_split)
+df_pit_test <- testing(df_pit_split)
+
+# Using rfmodel6 to analyze the data for homeless_family_rate:
+rfmodel_train <- randomForest(homeless_family_rate ~ fmr_studio + min_wage + unemployment_rate + mgr_studio + median_income+ poverty_rate, 
+                         data = df_pit_train,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 5)
+rfmodel_train
+importance(rfmodel_train)
+which.min(rfmodel_train$mse)
+sqrt(rfmodel_train$mse[which.min(rfmodel_train$mse)]) 
+
+# Using rfmodel6 to analyze the data for homeless_individual_rate
+rfmodel_train1 <- randomForest(homeless_individual_rate ~ fmr_studio + min_wage + unemployment_rate + mgr_studio + median_income+ poverty_rate, 
+                         data = df_pit_train,
+                         importance = TRUE,
+                         ntree = 300,
+                         mtry = 4)
+rfmodel_train1
+which.min(rfmodel_train1$mse)
+sqrt(rfmodel_train1$mse[which.min(rfmodel_train1$mse)]) 
+
+
+#Feature importance based on %IncMSE and IncNodePurity for homeless_family_rate
+ImpData <- as.data.frame(importance(rfmodel_train))
+ImpData$Var.Names <- row.names(ImpData)
+p9<- ggplot(ImpData, aes(x=Var.Names, y=`%IncMSE`)) +
+  geom_segment( aes(x=Var.Names, xend=Var.Names, y=0, yend=`%IncMSE`), color="orange") +
+  geom_point(aes(size = IncNodePurity), color="purple", alpha=0.6) +
+  theme(panel.background = element_rect(fill = "white",
+                                colour = "lightblue",
+                                linewidth  = 0.5, linetype = "solid"),  
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "lightblue"))+
+  #theme_light() +
+  coord_flip() +
+  labs(title="Feature importance - homeless family rate ") +
+  theme(
+    legend.position="bottom",
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+p9
+
+#Feature importance based on %IncMSE and IncNodePurity for homeless_individual_rate
+ImpData <- as.data.frame(importance(rfmodel_train1))
+ImpData$Var.Names <- row.names(ImpData)
+p10<- ggplot(ImpData, aes(x=Var.Names, y=`%IncMSE`)) +
+  geom_segment( aes(x=Var.Names, xend=Var.Names, y=0, yend=`%IncMSE`), color="orange") +
+  geom_point(aes(size = IncNodePurity), color="purple", alpha=0.6) +
+  theme(panel.background = element_rect(fill = "white",
+                                colour = "lightblue",
+                                linewidth  = 0.5, linetype = "solid"),  
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "lightblue"))+
+  #theme_light() +
+  coord_flip() +
+  labs(title="Feature importance - homeless individual rate ") +
+  theme(
+    legend.position="bottom",
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+p10
+
+# Arrange the plots 
+ggarrange(p9,p10,
+          labels = c("A", "B"),
+          common.legend = TRUE,
+          ncol = 1, nrow = 2)
+
+ggsave("scat.jpeg", width = 12, height = 8)
+
+plot(rfmodel_train)
+
+importance(rfmodel_train)
+importance(rfmodel_train1)
+varImpPlot(rfmodel_train)
+
+# Plotting the feature importance
+importance_data <- data.frame(Feature = rownames(importance(rfmodel_train)),
+Importance = importance(rfmodel_train)[, "IncNodePurity"])
+ggplot(importance_data, aes(x = reorder(Feature, Importance), y = Importance, fill = Feature)) + geom_bar(stat = "identity") +
+coord_flip() + labs(title = "Feature Importance", x = "Features", y = "Importance Score") 
+
+#OOB error rate accross trees
+plot(rfmodel_train, main="OOB Error Rate Across Trees")
+
+
+# Run the "rfmodel_train" model on the testing dataset and store the values into "homeless_fam_rate_pred"
+homeless_fam_rate_predicted = predict(rfmodel_train,df_pit_test)
+# Run the "rfmodel_train1" model on the testing dataset and store the values into "homeless_ind_rate_pred"
+homeless_ind_rate_predicted = predict(rfmodel_train1,df_pit_test)
+
+# Add the homeless_fam_rate_pred and homeless_ind_rate_predicted values into the testing dataset
+df_pit_test$homeless_fam_rate_predicted = round(homeless_fam_rate_predicted, 2)
+df_pit_test$homeless_ind_rate_predicted = round(homeless_ind_rate_predicted,2)
+view(df_pit_test%>%select(homeless_family_rate,homeless_individual_rate,homeless_fam_rate_predicted,homeless_ind_rate_predicted))
+
+# Plotting the residuals from the model againest the predicted homeless family rate
+df_pit_test %>% 
+  ggplot(aes(x = homeless_fam_rate_predicted, y = homeless_family_rate - homeless_fam_rate_predicted)) +
+  geom_point() + 
+  labs(x = "Predicted homeless rate family",
+       y = "Residual",
+       subtitle = "Residual plot") 
+
+# Plotting the residuals from the model againest the predicted homeless individual rate
+df_pit_test %>% 
+  ggplot(aes(x = homeless_ind_rate_predicted, y = homeless_individual_rate - homeless_ind_rate_predicted)) +
+  geom_point() + 
+  labs(x = "Predicted homeless rate individual",
+       y = "Residual",
+       subtitle = "Residual plot") 
+
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Family based on MGR
+p1 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = mgr_studio, y = homeless_family_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = mgr_studio , y = homeless_fam_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs(title = "Predicted Vs Real Homeless Rate for Family", x = "Median Gross Rent", y = "Homeless Rate - Family", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p1
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Family based on FMR
+p2 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = fmr_studio, y = homeless_family_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = fmr_studio , y = homeless_fam_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs(x = "FMR", y = "Homeless Rate - Family", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p2
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Family based on Minimum wage
+p3 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = min_wage, y = homeless_family_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = min_wage , y = homeless_fam_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs( x = "Minimum wage", y = "Homeless Rate - Family", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p3
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Family based on Poverty Rate
+p4 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = poverty_rate, y = homeless_family_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = poverty_rate , y = homeless_fam_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs( x = "Poverty Rate", y = "Homeless Rate - Family", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p4
+
+# Arrange the plots 
+ggarrange(p1,p2,p3,p4,
+          labels = c("A", "B", "C", "D"),
+          common.legend = TRUE,
+          ncol = 2, nrow = 2)
+
+
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Individual based on MGR
+p5 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = mgr_studio, y = homeless_individual_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = mgr_studio , y = homeless_ind_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs(title = "Predicted Vs Real Homeless Rate for Individual", x = "Median Gross Rent", y = "Homeless Rate - Individual", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p5
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Individual based on FMR
+p6 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = fmr_studio, y = homeless_individual_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = fmr_studio , y = homeless_ind_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs(x = "FMR", y = "Homeless Rate - Individual", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p6
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Individual based on Minimum wage
+p7 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = min_wage, y = homeless_individual_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = min_wage , y = homeless_ind_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs( x = "Minimum wage", y = "Homeless Rate - Individual", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p7
+
+# Build scatterplot for Predicted Vs Real Homeless Rate for Individual based on Poverty Rate
+p8 <- df_pit_test %>% 
+ggplot() + 
+  geom_point( aes(x = poverty_rate, y = homeless_individual_rate, color = 'red', alpha = 0.5) ) + 
+  geom_point( aes(x = poverty_rate , y = homeless_ind_rate_predicted, color = 'blue',  alpha = 0.5)) + 
+  labs(x = "Povery Rate", y = "Homeless Rate - Individual", color = "", alpha = 'Transperency') +
+  scale_color_manual(labels = c( "Predicted", "Real"), values = c("blue", "red")) 
+p8
+
+# Arrange the plots 
+ggarrange(p5,p6,p7,p8,
+          labels = c("A", "B", "C", "D"),
+          common.legend = TRUE,
+          ncol = 2, nrow = 2)
+
+
+# MAE=0.0224, MSE=0.0013 and R2=0.719 for homeless_family_rate
+print(paste0('MAE: ' , mae(df_pit_test$homeless_family_rate,homeless_fam_rate_predicted) ))
+print(paste0('MSE: ' ,caret::postResample(homeless_fam_rate_predicted , df_pit_test$homeless_family_rate)['RMSE']^2 ))
+print(paste0('R2: ' ,caret::postResample(homeless_fam_rate_predicted , df_pit_test$homeless_family_rate)['Rsquared'] ))
+
+# MAE=0.0330, MSE=0.0026 and R2=0.585 for homeless_individual_rate
+print(paste0('MAE: ' , mae(df_pit_test$homeless_individual_rate,homeless_ind_rate_predicted) ))
+print(paste0('MSE: ' ,caret::postResample(homeless_ind_rate_predicted , df_pit_test$homeless_individual_rate)['RMSE']^2 ))
+print(paste0('R2: ' ,caret::postResample(homeless_ind_rate_predicted , df_pit_test$homeless_individual_rate)['Rsquared'] ))
+```
+
+
+
+### Check the model for classification accuracy
+```{r}
+# Add columns "high_hlfr", "predicted_high_hlfr" where 1 is for homeless_family_rate for real and predicted>= 0.1 and 0 otherwise. 
+# Add column "pred_high" where 1 is for predicted homeless_individual_rate >= 0.1 and 0 otherwise. 
+df_pit_test_1 <- df_pit_test %>% 
+  mutate(high_hlfr = if_else(homeless_family_rate>=0.1, 1, 0)) %>%
+  mutate(medium_hlfr = if_else(homeless_family_rate>=0.05 & homeless_family_rate<0.1 , 1, 0)) %>%
+  mutate(predicted_high_hlfr = if_else(homeless_fam_rate_predicted>=0.1, 1,0)) %>%
+  mutate(predicted_medium_hlfr = if_else(homeless_fam_rate_predicted>=0.05 & homeless_fam_rate_predicted<0.1, 1,0))%>%
+  select(10,17:21)
+
+# Build the table for confision matrix(cfm) for classification of high and medium homeless_family_rate
+cfm1 = table(df_pit_test_1$high_hlfr, df_pit_test_1$predicted_high_hlfr)
+cfm2 = table(df_pit_test_1$medium_hlfr, df_pit_test_1$predicted_medium_hlfr)
+cfm1 
+cfm2
+
+# Calculate the cfm accuracy 
+cfm_accuracy1 = sum(diag(cfm1)/sum(cfm1))
+cfm_accuracy1
+
+cfm_accuracy2 = sum(diag(cfm2)/sum(cfm2))
+cfm_accuracy2
+
+# Plotting confusion matrix of high and medium homeless rate- family
+cfm1 <- confusionMatrix(factor(df_pit_test_1$predicted_high_hlfr), factor(df_pit_test_1$high_hlfr), dnn = c("Prediction", "Actual"))
+plt1 <- as.data.frame(cfm1$table)
+plt1$Prediction <- factor(plt1$Prediction, levels=rev(levels(plt1$Prediction)))
+ggplot(plt1, aes(Prediction,Actual, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Actual",y = "Prediction") +
+        scale_x_discrete(labels=c("high_hlfr","medium_hlfr")) +
+        scale_y_discrete(labels=c("medium_hlfr","high_hlfr"))
+
+# Plotting confusion matrix of medium and low homeless rate- family
+cfm2 <- confusionMatrix(factor(df_pit_test_1$predicted_medium_hlfr), factor(df_pit_test_1$medium_hlfr), dnn = c("Prediction", "Actual"))
+plt2 <- as.data.frame(cfm2$table)
+plt2$Prediction <- factor(plt2$Prediction, levels=rev(levels(plt2$Prediction)))
+ggplot(plt2, aes(Prediction,Actual, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Actual",y = "Prediction") +
+        scale_x_discrete(labels=c("medium_hlfr","low_hlfr")) +
+        scale_y_discrete(labels=c("low_hlfr","medium_hlfr"))
+```
+
+```{r}
+
+#Define the control
+trControl <- trainControl(method = "cv",
+    number = 10,
+    search = "grid")
+
+set.seed(1234)
+# Run the model
+rf_default <- train(homeless_individual_rate ~ fmr_1br + min_wage + unemployment_rate + mgr_1br + median_income+ poverty_rate,
+    data = df_pit_train,
+    method = "rf",
+    #metric = "Accuracy",
+    trControl = trControl)
+# Print the results
+print(rf_default)
+
+set.seed(1234)
+tuneGrid <- expand.grid(.mtry = c(1: 6))
+rf_mtry <- train(homeless_individual_rate ~ fmr_1br + min_wage + unemployment_rate + mgr_1br + median_income+ poverty_rate,
+    data = df_pit_train,
+    method = "rf",
+    tuneGrid = tuneGrid,
+    trControl = trControl,
+    importance = TRUE,
+    nodesize = 14,
+    ntree = 300)
+print(rf_mtry)
+best_mtry<-rf_mtry$bestTune$mtry
+best_mtry
+
+
+store_maxnode <- list()
+tuneGrid <- expand.grid(.mtry = best_mtry)
+for (maxnodes in c(5: 15)) {
+    set.seed(1234)
+    rf_maxnode <- train(homeless_family_rate ~ fmr_studio + min_wage + unemployment_rate + mgr_studio + median_income + poverty_rate,
+    data = df_pit_train,
+        method = "rf",
+        tuneGrid = tuneGrid,
+        trControl = trControl,
+        importance = TRUE,
+        nodesize = 14,
+        maxnodes = maxnodes,
+        ntree = 300)
+    current_iteration <- toString(maxnodes)
+    store_maxnode[[current_iteration]] <- rf_maxnode
+}
+results_mtry <- resamples(store_maxnode)
+summary(results_mtry)#9
+
+store_maxnode <- list()
+tuneGrid <- expand.grid(.mtry = best_mtry)
+for (maxnodes in c(20: 30)) {
+    set.seed(1234)
+    rf_maxnode <- train(homeless_family_rate ~ fmr_studio + min_wage + unemployment_rate + mgr_studio + median_income + poverty_rate,
+    data = df_pit_train,
+        method = "rf",
+        tuneGrid = tuneGrid,
+        trControl = trControl,
+        importance = TRUE,
+        nodesize = 14,
+        maxnodes = maxnodes,
+        ntree = 300)
+    key <- toString(maxnodes)
+    store_maxnode[[key]] <- rf_maxnode
+}
+results_node <- resamples(store_maxnode)
+summary(results_node)#20
+
+store_maxtrees <- list()
+for (ntree in c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000)) {
+    set.seed(5678)
+    rf_maxtrees <- train(homeless_family_rate ~ fmr_1br + min_wage + unemployment_rate + mgr_1br + median_income+ poverty_rate,
+    data = df_pit_train,
+        method = "rf",
+        tuneGrid = tuneGrid,
+        trControl = trControl,
+        importance = TRUE,
+        nodesize = 14,
+        maxnodes = 24,
+        ntree = ntree)
+    key <- toString(ntree)
+    store_maxtrees[[key]] <- rf_maxtrees
+}
+results_tree <- resamples(store_maxtrees)
+summary(results_tree)
+
+set.seed(5678)
+fit_rf <- train(homeless_individual_rate ~ fmr_1br + min_wage + unemployment_rate + mgr_1br + median_income+ poverty_rate,
+    data = df_pit_train,
+    method = "rf",
+    tuneGrid = tuneGrid,
+    trControl = trControl,
+    importance = TRUE,
+    nodesize = 14,
+    ntree = 300,
+    maxnodes = 20)
+
+fit_rf
+preds<-predict(fit_rf, df_pit_test)
+
+df_pit_test$homeless_predicted = preds
+view(df_pit_test)
+
+print(paste0('MAE: ' , mae(df_pit_test$homeless_family_rate,df_pit_test$homeless_predicted) ))
+print(paste0('MSE: ' ,caret::postResample(df_pit_test$homeless_predicted , df_pit_test$homeless_family_rate)['RMSE']^2 ))
+print(paste0('R2: ' ,caret::postResample(df_pit_test$homeless_predicted , df_pit_test$homeless_family_rate)['Rsquared'] ))
+
+print(paste0('MAE: ' , mae(df_pit_test$homeless_individual_rate,df_pit_test$homeless_predicted) ))
+print(paste0('MSE: ' ,caret::postResample(df_pit_test$homeless_predicted , df_pit_test$homeless_individual_rate)['RMSE']^2 ))
+print(paste0('R2: ' ,caret::postResample(df_pit_test$homeless_predicted , df_pit_test$homeless_individual_rate)['Rsquared'] ))
+
+```
+
+

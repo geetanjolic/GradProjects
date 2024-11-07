@@ -1,0 +1,279 @@
+
+# Install libraries if needed and then load
+```{r}
+#install.packages(c("tidyverse","dplyr","ggplot2","readxl","writexl","rio","cowplot"))
+
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(rio)
+library(ggplot2)
+library(cowplot)
+
+# Read the state abbreviation list
+state_abbrev_dict <- read_excel("state_abbrev_dict.xlsx")
+```
+
+
+# Population dataset cleanup
+```{r}
+# Read the population by state and year to variable 'population_raw'
+population_raw <- read_csv("Population per state per year.csv")
+# Remove the first 5 rows with regional data
+population_raw <- tail(population_raw, -5) 
+
+# Select the years 2015 to 2019, remove row Puerto Rico 
+population_final <-  population_raw %>% 
+  select(5, (13:17)) %>%
+  subset(!NAME == "Puerto Rico") %>%
+  # Left join with 'state_abbrev_dict' 
+  left_join(state_abbrev_dict, by = c("NAME" = "State")) %>%
+  # Move column Abbr to the first
+  relocate(Abbr) %>% 
+  # Rename column Abbr to State, NAME to StateName and the rename the years
+  rename("state"="Abbr", "statename" ="NAME", "2015" = "POPESTIMATE2015", "2016" = "POPESTIMATE2016", "2017" = "POPESTIMATE2017", "2018" = "POPESTIMATE2018", "2019" = "POPESTIMATE2019") %>%
+  # Pivot the data from columns to rows for each year, ignore the State  and StateName columns 
+  pivot_longer(cols = !c('state', 'statename'), names_to = "year", values_to = "population") %>%
+  # Transform the class of Year column from character to integer
+  transform(year = as.integer(year))
+```
+
+
+
+# PIT count dataset - merging yearly worksheets to one dataframe and cleaning up the data then join with yearly population to calculate homeless rates
+```{r}
+# Save the file path to variable 'filepath_pit_data'
+filepath_pit_data <- "2007-2022-PIT-Counts-by-State.xlsx"
+
+# Using the 'Rio' package import the worksheets in the '2007-2022-PIT-Counts-by-State.xlsx' file into a list 'df_pit_raw'
+df_pit_raw <- import_list(filepath_pit_data)
+
+# Create an empty dataframe 'df_pit_count' to store the homeless data
+df_pit_count <- data.frame(
+  state = character(),
+  year = integer(),
+  homeless_total = integer(),
+  homeless_individual = integer(),
+  homeless_family = integer()
+)
+
+# Loop through the list 'df_pit_raw' from elements 5 through 9 for the years 2015 to 2019.
+for (i in 5:9){
+  # Select the columns for State, Overall homeless counts for total, individuals and families and store in 'df_temp'
+  df_temp <- select(df_pit_raw[[i]], c('State', 
+                                 contains('Overall Homeless,'),
+                                 contains('Overall Homeless Individuals,'),
+                                 contains('Overall Homeless People in Families,')))
+  # Remove the last row that contains the total value
+  df_temp <- head(df_temp, -1)
+  # Pivot the data from columns to rows for each year, ignore the State column
+  df_temp <- df_temp %>% pivot_longer(cols = !'State', 
+                                     names_to = c(".value", "year"), 
+                                     names_sep = ",")
+  # Create a dataframe with the values computed so far
+  df_temp <- data.frame(state = df_temp$'State', 
+                        year = as.integer(df_temp$year),
+                        homeless_total = df_temp$'Overall Homeless',
+                        homeless_individual = df_temp$'Overall Homeless Individuals',
+                        homeless_family = df_temp$'Overall Homeless People in Families')
+  # Bind the 'df_temp' dataframe to the 'df_pit_count' dataframe
+  df_pit_count <- rbind(df_pit_count, df_temp)
+}
+
+# Remove the observations for "AS", "GU", "MP", "PR", "VI"
+df_pit_count <- df_pit_count %>%
+  subset(!state %in% c("AS", "GU", "MP", "PR", "VI")) %>%
+  arrange(state, year) 
+
+# Do a full join of the population data to the homeless data by state and year
+df_pit_count <- df_pit_count %>%
+  full_join(population_final, by = c("state" = "state", "year" = "year")) %>%
+  # Calculate the rate of homelessness and add them in columns
+  mutate(homeless_total_rate = round((homeless_total / population * 100), 2), homeless_individual_rate = round((homeless_individual / population * 100), 2), homeless_family_rate = round((homeless_family / population * 100), 2))
+```
+
+
+# Unemployment dataset cleanup and join to PIT count dataset
+```{r}
+# Read the unemployment dataset into the variable 'unemployment_raw'
+unemployment_raw <- read_excel("Unemployment per state per year.xlsx")
+
+# Pivot the data into the columns Year and unemployment_rate and store in the variable 'unemployment_data_final' 
+unemployment_data_final <- tail(unemployment_raw, -1) %>% 
+  # Select columns for years 2015 to 2019
+  select(1 , (5:9)) %>%
+  pivot_longer(cols = !'State', names_to = "year", values_to = "unemployment_rate") %>%
+  arrange(State) %>%
+  # Transform the class of Year column from character to integer
+  transform(year = as.integer(year)) %>%
+  rename("statename" = "State")
+
+# Left join 'df_pit_count_final' and 'unemployment_data_final' by state and year into the variable 'df_pit_unemployment'
+df_pit_count_final <- df_pit_count %>%
+  left_join(unemployment_data_final, by = c("statename" = "statename", "year" = "year"))
+```
+
+
+# Poverty dataset cleanup and join to PIT count dataset
+```{r}
+# Read the poverty rate dataset into the variable 'poverty_rate'
+poverty_rate <- read_excel("Poverty Rates by State 2015-209.xlsx") %>% select(1,2,4)
+
+# Left join 'df_pit_count_final' and 'poverty_rate' by state and year into the variable 'df_pit_count_final'
+df_pit_count_final <- df_pit_count_final %>%
+  left_join(poverty_rate, by = c("statename" = "state", "year" = "year"))
+
+#sapply(df_pit_count_final, class)
+```
+
+
+# Median income dataset cleanup and join with PIT count dataset
+```{r}
+median_income <- read_xlsx("Median Household Income 2015-2019.xlsx", col_names = FALSE)
+colnames(median_income) <- c("statename", "2019", "2018", "2017", "2016", "2015")
+#colnames(median_income)
+#sapply(median_income, class)
+
+median_income <- tail(median_income, -2) %>%
+  pivot_longer(cols = !'statename', names_to = "year", values_to = "median_income") %>%
+  transform(year = as.integer(year))
+
+# Left join 'df_pit_count_final' and 'median_income' by state and year into the variable 'df_pit_count_final'
+df_pit_count_final <- df_pit_count_final %>%
+  left_join(median_income, by = c("statename" = "statename", "year" = "year"))
+```
+
+
+# FMR dataset cleanup and join with PIT count dataset
+```{r}
+# Read FMR data from 2015 to variable fmr_2015
+fmr_2015 <- read_excel("FY2015F_4050_Final.xls") %>%
+  # Select fmr for studio, 1BHK, 2BHK apartments and the state
+   select(fmr0,fmr1, fmr2, state = state_alpha) %>%
+   group_by(state) %>%
+   # Group by state and calculate the mean for FMR for studio, 1 and 2 BHK apartment
+   # Round up or down to nearest whole number
+   summarise(fmr_studio = round(mean(fmr0)),fmr_1br = round(mean(fmr1)), fmr_2br = round(mean(fmr2))) %>%
+   ungroup() %>%
+   # Remove US territories 
+   subset(!state %in% c("AS", "GU", "MP", "PR", "VI")) %>% 
+   # Add the year to the table
+   add_column(year = "2015")
+
+
+# Read FMR data from 2015 to variable fmr_2016 and repeat steps 
+fmr_2016 <- read_excel("FY2016F_4050_Final.xlsx") %>%
+  select(fmr0,fmr1, fmr2, state = state_alpha) %>%
+  group_by(state) %>%
+  summarise(fmr_studio = round(mean(fmr0)),fmr_1br = round(mean(fmr1)), fmr_2br = round(mean(fmr2))) %>%
+  ungroup() %>%
+  subset(!state %in% c("AS", "GU", "MP", "PR", "VI")) %>% 
+  add_column(year = "2016")
+
+# Read FMR data from 2017 to variable fmr_2017 and repeat steps 
+fmr_2017 <- read_excel("FY2017-4050-County-Level_Data.xlsx") %>%
+ select(fmr0,fmr1, fmr2, state = state_alpha) %>%
+  group_by(state) %>%
+  summarise(fmr_studio = round(mean(fmr0)),fmr_1br = round(mean(fmr1)), fmr_2br = round(mean(fmr2))) %>%
+  ungroup() %>%
+  subset(!state %in% c("AS", "GU", "MP", "PR", "VI")) %>% 
+  add_column(year = "2017")
+
+# Read FMR data from 2018 to variable fmr_2018 and repeat steps 
+fmr_2018 <- read_excel("FY18_4050_FMRs_rev.xlsx") %>%
+  select(fmr_0,fmr_1, fmr_2, state = state_alpha) %>%
+  group_by(state) %>%
+  summarise(fmr_studio = round(mean(fmr_0)),fmr_1br = round(mean(fmr_1)), fmr_2br = round(mean(fmr_2))) %>%
+  ungroup() %>%
+  subset(!state %in% c("AS", "GU", "MP", "PR", "VI")) %>% 
+  add_column(year = "2018")
+
+# Read FMR data from 2019 to variable fmr_2019 and repeat steps 
+fmr_2019 <- read_excel("FY2019_4050_FMRs_rev2.xlsx") %>%
+  select(fmr_0, fmr_1, fmr_2, state = state_alpha) %>%
+  group_by(state) %>%
+  summarise(fmr_studio = round(mean(fmr_0)),fmr_1br = round(mean(fmr_1)), fmr_2br = round(mean(fmr_2))) %>%
+  ungroup() %>%
+  subset(!state %in% c("AS", "GU", "MP", "PR", "VI")) %>% 
+  add_column(year = "2019")
+
+# Bind the data from 2015 to 2019 into one table and convert year to integer
+fmr_2015_19 <- bind_rows(fmr_2015, fmr_2016,fmr_2017, fmr_2018, fmr_2019) %>%
+  transform(year = as.integer(year))
+
+# Left join 'df_pit_count_final' and 'fmr_2015_19' by state and year into the variable 'df_pit_count_final'
+df_pit_count_final <- df_pit_count_final %>%
+  left_join(fmr_2015_19, by = c("state" = "state", "year" = "year"))
+```
+
+
+# Gross Rent dataset cleanup and join with PIT count dataset
+```{r}
+# Read the file
+gross_rent_raw <- read_excel("Median Gross Rent by Bedrooms 2015-2019.xlsx")
+# Remove the last row that has total
+gross_rent_raw <- head(gross_rent_raw, -1)
+
+
+
+
+# Create a table for 2015 with coloumns for 2015
+gross_rent_2015 <- gross_rent_raw %>%
+  select(1, (3:5))
+# Change the column names
+colnames(gross_rent_2015) <- c("statename", "mgr_studio", "mgr_1br", "mgr_2br")
+# Add the year
+gross_rent_2015 <- gross_rent_2015 %>% add_column(year = "2015")
+
+# Repeat same spets for 2016
+gross_rent_2016 <- gross_rent_raw %>%
+  select(1, (7:9))
+colnames(gross_rent_2016) <- c("statename", "mgr_studio", "mgr_1br", "mgr_2br")
+gross_rent_2016 <- gross_rent_2016 %>% add_column(year = "2016")
+
+# Repeat same spets for 2017
+gross_rent_2017 <- gross_rent_raw %>%
+  select(1, (11:13))
+colnames(gross_rent_2017) <- c("statename", "mgr_studio", "mgr_1br", "mgr_2br")
+gross_rent_2017 <- gross_rent_2017 %>% add_column(year = "2017")
+
+# Repeat same spets for 2018
+gross_rent_2018 <- gross_rent_raw %>%
+  select(1, (15:17))
+colnames(gross_rent_2018) <- c("statename", "mgr_studio", "mgr_1br", "mgr_2br")
+gross_rent_2018 <- gross_rent_2018 %>% add_column(year = "2018")
+
+# Repeat same spets for 2019
+gross_rent_2019 <- gross_rent_raw %>%
+  select(1, (19:21))
+colnames(gross_rent_2019) <- c("statename", "mgr_studio", "mgr_1br", "mgr_2br")
+gross_rent_2019 <- gross_rent_2019 %>% add_column(year = "2019")
+
+# Bind the data from 2015 to 2019 into one table and convert year to integer
+mgr_2015_19 <- bind_rows(gross_rent_2015, gross_rent_2016,gross_rent_2017, gross_rent_2018, gross_rent_2019) %>%
+  transform(year = as.integer(year))
+
+# Left join 'df_pit_count_final' and 'mgr_2015_19' by state and year into the variable 'df_pit_count_final'
+df_pit_count_final <- df_pit_count_final %>%
+  left_join(mgr_2015_19, by = c("statename" = "statename", "year" = "year"))
+
+```
+
+
+# Minimum wage dataset cleanup and join with PIT count dataset
+```{r}
+# Read dat from csv file and select relevant columns
+min_wage <- read_csv("Minimum Wage Data.csv") %>%
+  select(1:3) %>% 
+  # Filter the years 2015 to 2019, remove US territories, rename columns
+  filter(Year %in% c("2015", "2016", "2017", "2018", "2019") & !State %in% c("U.S. Virgin Islands", "Guam", "Puerto Rico", "PR", "VI")) %>%
+  rename("year" = "Year", "statename" = "State", "min_wage" = "State.Minimum.Wage")
+
+# Left join 'df_pit_count_final' and 'min_wage' by state and year into the variable 'df_pit_count_final'
+df_pit_count_final <- df_pit_count_final %>%
+  left_join(min_wage, by = c("statename" = "statename", "year" = "year"))
+
+# Convert all states in column 'statename' to lowercase 
+df_pit_count_final$statename <- tolower(df_pit_count_final$statename)
+```
